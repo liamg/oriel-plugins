@@ -1,0 +1,58 @@
+# The registry's PR check (oriel catalog.md, "What the registry's CI checks"): every changed plugin.toml's owner,
+# tag, `oriel plugin pack` at its commit, archives and dependencies, and a comment that leads with the capability
+# diff. It runs as pull_request_target so a fork's PR gets the secrets it needs to read Oriel, so nothing from the
+# PR's checkout is run: it's read as data.
+name: plugin PR
+
+on:
+  pull_request_target:
+    paths: ["plugins/**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: liamg/oriel
+          token: ${{ secrets.ORIEL_READ_TOKEN }}
+          path: oriel
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: oriel/go.work
+          cache: false
+      - name: Build the checker
+        working-directory: oriel
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/oriel-registry" ./catalog/cmd/oriel-registry
+      - name: Check
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          GH_TOKEN: ${{ secrets.ORIEL_READ_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/oriel-registry" check --base base --head head --author "$AUTHOR" \
+            --allow oriel/deps/allow.txt --comment "$RUNNER_TEMP/comment.md"
+      - name: Comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          test -s "$RUNNER_TEMP/comment.md" || exit 0
+          gh pr comment "$PR" --repo "$REPO" --edit-last --body-file "$RUNNER_TEMP/comment.md" ||
+            gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"

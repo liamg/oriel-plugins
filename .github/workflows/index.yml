@@ -1,0 +1,50 @@
+# On merge: flatten every plugin.toml into index.json, sign it into index.sig with the registry's ed25519 key, and
+# publish both as a release (oriel catalog.md, "The index"). The key lives only in this repo's secrets.
+name: index
+
+on:
+  push:
+    branches: [main]
+    paths: ["plugins/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: index
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: registry
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: liamg/oriel
+          token: ${{ secrets.ORIEL_READ_TOKEN }}
+          path: oriel
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: oriel/go.work
+          cache: false
+      - name: Build the indexer
+        working-directory: oriel
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/oriel-registry" ./catalog/cmd/oriel-registry
+      - name: Index and sign
+        env:
+          ORIEL_REGISTRY_KEY: ${{ secrets.ORIEL_REGISTRY_KEY }}
+        run: '"$RUNNER_TEMP/oriel-registry" index --key - --registry "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/index" registry'
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="index-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "$tag" --notes "The plugin index at ${GITHUB_SHA::7}." \
+            "$RUNNER_TEMP/index/index.json" "$RUNNER_TEMP/index/index.sig"
